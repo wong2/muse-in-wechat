@@ -15,6 +15,6 @@
   },
   "scripts": {
     "start": "bun index.ts",
-    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --strict --skipLibCheck *.ts"
+    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --strict --skipLibCheck index.ts"
   }
 }
