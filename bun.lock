@@ -5,7 +5,7 @@
     "": {
       "name": "muse-in-wechat",
       "dependencies": {
-        "muse-client": "0.2.0",
+        "muse-client": "0.3.0",
         "weixin-agent-sdk": "0.5.0",
       },
       "devDependencies": {
@@ -23,7 +23,7 @@
 
     "bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
 
-    "muse-client": ["muse-client@0.2.0", "", { "dependencies": { "ws": "^8.22.0" } }, "sha512-6txSw63DUGlZ4H2sNwY7npE4fBo72QpBnoXSVkb8DnC9TScgpc+KvhzDIzO11hkPA0gg24yX6IrhKylmbWu/EA=="],
+    "muse-client": ["muse-client@0.3.0", "", { "dependencies": { "ws": "^8.22.0" } }, "sha512-KxIogNJWGMesuTv8BpmhINa60QMIG4JX8TBtBlUwFz6n5eleX6oQ37LcfVtVGEg2I3hpb/KzqICRnhZV+/lRwQ=="],
 
     "qrcode-terminal": ["qrcode-terminal@0.12.0", "", { "bin": { "qrcode-terminal": "./bin/qrcode-terminal.js" } }, "sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ=="],
 

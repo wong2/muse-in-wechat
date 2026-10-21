@@ -5,10 +5,10 @@
  *
  * 复用同一 Muse 会话保留上下文（不支持 /clear）；收到第一条微信消息后，
  * 转发所选会话全部新的助手回复；选项按钮转为编号列表，回复数字发送对应选项；
- * Muse 断线自动重连，不自动重发。
+ * 图片随文字发给 Muse（单次约 190KB）；Muse 断线自动重连，不自动重发。
  */
 
-import { type ChatEvent, MuseClient, transcriptText } from "muse-client";
+import { type ChatEvent, type ImageAttachment, MuseClient, MuseError, transcriptText } from "muse-client";
 import { defaultCredentialsDirectory, loadCredentials, saveCredentials } from "muse-client/credentials";
 import { type Agent, isLoggedIn, login, start } from "weixin-agent-sdk";
 import { setTimeout as delay } from "node:timers/promises";
@@ -45,6 +45,38 @@ function optionNumber(input: string) {
   const circled = CIRCLED.indexOf(input);
   if (circled >= 0) return circled + 1;
   return /^\d+$/.test(input) ? Number(input) : undefined;
+}
+
+// Muse 的 JSON 请求上限约 255KB，base64 后图片宜小于 190KB。微信只给 image/* 和 .bin 路径。
+const IMAGE_LIMIT = 190 * 1024;
+function imageFile(data: Uint8Array): Pick<ImageAttachment, "mimeType" | "filename"> | undefined {
+  const ascii = (start: number, length: number) =>
+    data.length >= start + length ? String.fromCharCode(...data.subarray(start, start + length)) : "";
+  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return { mimeType: "image/jpeg", filename: "wechat.jpg" };
+  if (ascii(0, 8) === "\x89PNG\r\n\x1a\n") return { mimeType: "image/png", filename: "wechat.png" };
+  if (ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a") return { mimeType: "image/gif", filename: "wechat.gif" };
+  if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") return { mimeType: "image/webp", filename: "wechat.webp" };
+  if (ascii(0, 2) === "BM") return { mimeType: "image/bmp", filename: "wechat.bmp" };
+  if ((ascii(0, 2) === "II" && data[2] === 0x2a) || (ascii(0, 2) === "MM" && data[2] === 0 && data[3] === 0x2a))
+    return { mimeType: "image/tiff", filename: "wechat.tiff" };
+  const brand = ascii(4, 4) === "ftyp" ? ascii(8, 4).toLowerCase() : "";
+  if (["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"].includes(brand))
+    return { mimeType: "image/heic", filename: "wechat.heic" };
+  if (brand === "avif" || brand === "avis") return { mimeType: "image/avif", filename: "wechat.avif" };
+}
+
+async function loadWechatImage(filePath: string): Promise<ImageAttachment | { error: string }> {
+  let data: Buffer;
+  try {
+    data = await readFile(filePath);
+  } catch {
+    return { error: "未能读取这张图片，请重新发送。" };
+  }
+  if (!data.byteLength) return { error: "这张图片是空的，请重新发送。" };
+  if (data.byteLength > IMAGE_LIMIT) return { error: "图片太大，Muse 单次大约只能接收 190KB，请压缩后再发送。" };
+  const file = imageFile(data);
+  if (!file) return { error: "无法识别这张图片的格式，请发送 JPEG 或 PNG。" };
+  return { data, ...file };
 }
 
 async function isMuseBound() {
@@ -244,25 +276,37 @@ async function run() {
   const agent: Agent = {
     async chat(request) {
       const text = request.text.trim();
-      if (request.media) return { text: "Muse 暂只支持文字聊天，请将内容转成文字后发送。" };
-      if (!text) return { text: "请发送文字消息。" };
+      const media = request.media;
+      if (media && media.type !== "image") return { text: "Muse 暂只支持文字和图片，请将其他附件转成文字后发送。" };
+      if (!media && !text) return { text: "请发送文字或图片。" };
       if (wechatId && wechatId !== request.conversationId)
         return { text: "此桥接仅支持一个微信会话。" };
       wechatId = request.conversationId;
-      if (text === "/help") return { text:
-        "直接发送文字即可和 Muse 对话。选项列表可回复数字选择，会发送对应选项文字。收到消息后，同步所选 Muse 会话中的全部新回复（包括其他客户端触发的回复）。不支持 /clear；重启会保留 Muse 的会话上下文。" };
+      if (!media && text === "/help") return { text:
+        "直接发送文字或图片即可和 Muse 对话，图片约 190KB 以内，可附带说明。选项列表可回复数字选择，会发送对应选项文字。收到消息后，同步所选 Muse 会话中的全部新回复（包括其他客户端触发的回复）。不支持 /clear；重启会保留 Muse 的会话上下文。" };
       if (shutdown.signal.aborted) return {};
       const c = client;
       if (!c) return { text: "Muse 正在重新连接，消息尚未发送，请稍后再试。" };
-      const input = widgets.resolve(request.text);
-      if ("error" in input) return { text: input.error };
+      let message = text;
+      let images: ImageAttachment[] | undefined;
+      if (media) {
+        const image = await loadWechatImage(media.filePath);
+        if ("error" in image) return { text: image.error };
+        images = [image];
+      } else {
+        const input = widgets.resolve(request.text);
+        if ("error" in input) return { text: input.error };
+        message = input.text;
+      }
       active = true; // 回复可能先于发送确认到达。
       try {
-        await c.sendMessage(input.text, { sessionId, signal: shutdown.signal });
+        await c.sendMessage(message, { images, sessionId, signal: shutdown.signal });
         return {}; // 回复由长驻订阅独立转发，不等待请求关联或整轮完成。
       } catch (error) {
         if (shutdown.signal.aborted) return {};
         console.error("Muse 消息发送失败：", errorMessage(error));
+        if (error instanceof MuseError && error.message.includes("too large"))
+          return { text: "图片太大，Muse 单次大约只能接收 190KB，请压缩后再发送。这次没有发出去。" };
         return { text: "未能确认 Muse 是否收到消息，请在 Muse 查看本次请求。为避免重复执行，没有自动重发。" };
       }
     },
