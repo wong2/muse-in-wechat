@@ -16,6 +16,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "weixin-agent-sdk@0.5.0": "patches/weixin-agent-sdk@0.5.0.patch",
+  },
   "packages": {
     "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
 

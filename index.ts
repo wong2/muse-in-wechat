@@ -12,7 +12,7 @@ import { type ChatEvent, type ImageAttachment, MuseClient, MuseError, transcript
 import { defaultCredentialsDirectory, loadCredentials, saveCredentials } from "muse-client/credentials";
 import { type Agent, isLoggedIn, login, start } from "weixin-agent-sdk";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -212,6 +212,43 @@ interface RenderedReply {
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined;
+const textValue = (value: unknown) => typeof value === "string" ? value.trim() : "";
+
+function webUrl(value: unknown): string | undefined {
+  const candidate = textValue(value);
+  if (!/^https?:\/\//i.test(candidate) || /\s/.test(candidate)) return;
+  try {
+    new URL(candidate);
+    return candidate;
+  } catch { return; }
+}
+
+// 链接/文件是独立的 presentation 事件；不能依赖正文完成事件或正文的 message_id。
+class PresentationReplies {
+  private sent = new Set<string>();
+
+  take(event: ChatEvent): string | undefined {
+    if (event.event !== "delta.presentation" || event.payload.role === "user") return;
+    const p = event.payload;
+    if (p.kind !== "external_link" && p.kind !== "file") return;
+    const id = textValue(p.id) || textValue(p.message_id);
+    if (!id || this.sent.has(id)) return;
+
+    const data = record(p.data);
+    const file = record(data?.file);
+    const url = p.kind === "external_link"
+      ? webUrl(data?.url) || webUrl(p.fallback_text) || webUrl(data?.fallback_text)
+      : webUrl(record(file?.variants)?.original) || webUrl(file?.path);
+    const label = textValue(p.display_text) || textValue(file?.label);
+    const reply = url
+      ? (label && label !== url ? `${label}\n${url}` : url)
+      : `${label ? `${label}\n` : ""}【此${p.kind === "file" ? "文件" : "链接"}请在 Muse App 中查看】`;
+
+    this.sent.add(id);
+    if (this.sent.size > 2000) this.sent.delete(this.sent.values().next().value!);
+    return reply;
+  }
+}
 
 // 按实际事件中的 kind=option / data.options 解析；不推测原生按钮提交协议。
 class OptionWidgets {
@@ -281,9 +318,18 @@ class OptionWidgets {
 }
 
 async function run() {
+  let eventLog: string | undefined;
+  if (process.env.MUSE_DEBUG === "1") {
+    const dir = join(import.meta.dir, "logs");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    eventLog = join(dir, `muse-events-${Date.now()}-${process.pid}.jsonl`);
+    await writeFile(eventLog, "", { flag: "wx", mode: 0o600 });
+    console.log(`Muse 原始事件日志：${eventLog}`);
+  }
   let client: MuseClient | undefined;
   let subscription: Awaited<ReturnType<MuseClient["subscribe"]>> | undefined;
   const replies = new SessionReplies();
+  const presentations = new PresentationReplies();
   const widgets = new OptionWidgets();
   let active = false;
   let wechatId: string | undefined;   // 仅支持一个微信会话
@@ -367,17 +413,28 @@ async function run() {
       try {
         for await (const event of subscription!) {
           if (shutdown.signal.aborted) return;
+          // 在任何正文/卡片过滤之前记录完整事件，包含 payload 和 raw。
+          if (eventLog) {
+            try {
+              await appendFile(eventLog, JSON.stringify({ receivedAt: new Date().toISOString(), event }) + "\n");
+            } catch (error) {
+              console.error("Muse 事件日志写入失败，已停止记录：", errorMessage(error));
+              eventLog = undefined;
+            }
+          }
           widgets.observe(event);
-          const text = replies.take(event);
+          const text = presentations.take(event) ?? replies.take(event);
           if (!text || !active) continue;
-          const reply = widgets.render(text);
-          widgets.clearSelection();
+          const isPresentation = event.event === "delta.presentation";
+          const reply = isPresentation ? { text, options: [] } : widgets.render(text);
+          // 独立链接卡片不覆盖正文中的选项，用户仍可回复数字选择。
+          if (!isPresentation) widgets.clearSelection();
           try {
             for (const part of chunks(reply.text)) {
               if (shutdown.signal.aborted) return;
               await bot.sendMessage(part);
             }
-            if (!shutdown.signal.aborted) widgets.activate(reply);
+            if (!shutdown.signal.aborted && !isPresentation) widgets.activate(reply);
           } catch (error) {
             console.error("微信回复发送失败，请在 Muse 查看原回复：", errorMessage(error));
           }

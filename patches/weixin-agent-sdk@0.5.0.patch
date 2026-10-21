@@ -1,0 +1,24 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index c935fa496a87b5afe32ecf40e33f985f3639d34d..b65fecce9cb40c58caa2cde6833a05d58de18113 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -1114,11 +1114,18 @@ function markdownToPlainText(text) {
+ 	let result = text;
+ 	result = result.replace(/```[^\n]*\n?([\s\S]*?)```/g, (_, code) => code.trim());
+ 	result = result.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
++	// Keep web destinations visible in plain-text delivery (including URL parentheses).
++	result = result.replace(/\[([^\]]+)\]\(<?(https?:\/\/(?:[^\s()<>]|\([^()]*\))+)>?(?:\s+"[^"]*")?\)/g,
++		(_, label, url) => label === url ? url : `${label}\n${url}`);
+ 	result = result.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
++	// Protect URL bytes from Markdown emphasis stripping, especially underscores.
++	const urls = [];
++	const marker = `\uE000${text.length}:`;
++	result = result.replace(/https?:\/\/[^\s<>"`]+/g, (url) => `${marker}${urls.push(url) - 1}\uE001`);
+ 	result = result.replace(/^\|[\s:|-]+\|$/gm, "");
+ 	result = result.replace(/^\|(.+)\|$/gm, (_, inner) => inner.split("|").map((cell) => cell.trim()).join("  "));
+ 	result = result.replace(/\*\*(.+?)\*\*/g, "$1").replace(/\*(.+?)\*/g, "$1").replace(/__(.+?)__/g, "$1").replace(/_(.+?)_/g, "$1").replace(/~~(.+?)~~/g, "$1").replace(/`(.+?)`/g, "$1");
+-	return result;
++	return result.replace(new RegExp(`${marker}(\\d+)\uE001`, "g"), (_, index) => urls[Number(index)]);
+ }
+ /** Build a SendMessageReq containing a single text message. */
+ function buildTextMessageReq(params) {
