@@ -14,10 +14,7 @@
     "weixin-agent-sdk": "0.5.0"
   },
   "scripts": {
-    "test": "bun test",
-    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --strict --skipLibCheck index.ts index.test.ts startup.test.ts widgets.test.ts",
-    "start": "bun index.ts start",
-    "muse": "bun index.ts muse",
-    "wechat": "bun index.ts wechat"
+    "start": "bun index.ts",
+    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --strict --skipLibCheck *.ts"
   }
 }

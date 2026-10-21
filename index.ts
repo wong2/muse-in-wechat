@@ -1,22 +1,11 @@
 /**
  * muse-in-wechat — 在微信 Clawbot 中与 Muse 文字对话，无需公网服务器。
  *
- * 依赖：bun add muse-client weixin-agent-sdk（Bun 自动加载 .env）
+ *   bun start   按需完成 Muse 配对与微信扫码绑定，然后启动；Ctrl+C 退出
  *
- *   bun start           自动完成 Muse 配对、微信扫码绑定，然后启动；Ctrl+C 退出
- *   bun run muse        单独配对 Muse（仅 macOS）
- *   bun run wechat      单独微信扫码登录（凭据存于 ~/.openclaw/）
- *
- * 可选环境变量：
- *   MUSE_CREDENTIALS_DIR  Muse 凭据目录；默认复用 muse-client 的已有配对
- *   MUSE_VM_ID            指定 Muse VM；默认使用默认 VM
- *   MUSE_SESSION_ID       已存在的侧会话 ID；默认主会话
- *   MUSE_DEBUG_WIDGETS    设为 1，将包含 widget 的原始事件记录到 logs/（含消息内容）
- *
- * 说明：复用同一 Muse 会话保留上下文，重启不清除远端历史（不支持 /clear）；
- * 收到第一条微信消息后，转发所选会话全部新的助手回复（含其他客户端触发的）；
- * 选项按钮转为编号列表，回复数字会发送对应选项文字；
- * 仅文字（含微信已转写的语音）；Muse 断线自动重连，不自动重发。
+ * 复用同一 Muse 会话保留上下文（不支持 /clear）；收到第一条微信消息后，
+ * 转发所选会话全部新的助手回复；选项按钮转为编号列表，回复数字发送对应选项；
+ * Muse 断线自动重连，不自动重发。
  */
 
 import { MuseClient } from "muse-client";
@@ -27,14 +16,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
-import { startWithBindings } from "./startup";
 import { SessionReplies } from "./replies";
-import { createWidgetRecorder } from "./widget-debug";
 import { OptionWidgets } from "./widgets";
 
 const sessionId = process.env.MUSE_SESSION_ID || undefined;
-const credentialsDir = process.env.MUSE_CREDENTIALS_DIR || undefined;
-const vmId = process.env.MUSE_VM_ID || undefined;
 
 const shutdown = new AbortController();
 let loggingIntoWechat = false;
@@ -45,14 +30,7 @@ for (const name of ["SIGINT", "SIGTERM"] as const)
     if (loggingIntoWechat) process.exit(name === "SIGINT" ? 130 : 143);
   });
 
-async function connect() {
-  return MuseClient.connect({
-    credentials: await loadCredentials(credentialsDir),
-    onCredentials: (credentials) => saveCredentials(credentials, credentialsDir),
-    onWarning: console.warn,
-    vmId,
-  });
-}
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : "未知错误";
 
 // 长回复按 2000 个 Unicode 码点分段，不切散 emoji。
 function* chunks(text: string, size = 2000) {
@@ -60,48 +38,53 @@ function* chunks(text: string, size = 2000) {
   for (let i = 0; i < chars.length; i += size) yield chars.slice(i, i + size).join("");
 }
 
-async function pair() {
+async function isMuseBound() {
+  try {
+    await loadCredentials();
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    return false;
+  }
+}
+
+async function readSdkToken() {
+  const token = process.env.MUSE_SDK_TOKEN?.trim();
+  if (token) return token;
+  try {
+    return (await readFile(join(defaultCredentialsDirectory(), "sdk_token"), "utf8")).trim();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  console.log("请在 https://gadgets.muse.ai/settings/sdk-tokens 获取 Muse SDK Token。");
+  if (!process.stdin.isTTY) throw new Error("请在交互式终端运行 bun start，或通过 MUSE_SDK_TOKEN 环境变量提供 Token。");
+  process.stdout.write("粘贴 Muse SDK Token（输入不显示），然后按回车：");
+  const muted = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  const input = createInterface({ input: process.stdin, output: muted, terminal: true });
+  input.on("SIGINT", () => shutdown.abort());
+  try {
+    return await input.question("", { signal: shutdown.signal });
+  } finally {
+    input.close();
+    muted.end();
+    process.stdout.write("\n");
+  }
+}
+
+async function pairMuse() {
   if (process.platform !== "darwin") throw new Error("首次 Muse 配对需要在 macOS 上完成。");
-  const { pairMacOS, validateSDKToken } = await import("muse-client/pairing");
-  let sdkToken = process.env.MUSE_SDK_TOKEN?.trim();
-  if (!sdkToken) {
-    try {
-      sdkToken = (await readFile(join(credentialsDir ?? defaultCredentialsDirectory(), "sdk_token"), "utf8")).trim();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  if (!sdkToken) {
-    console.log("请在 https://gadgets.muse.ai/settings/sdk-tokens 获取 Muse SDK Token。");
-    if (!process.stdin.isTTY) throw new Error("请在交互式终端运行 bun start，或通过 MUSE_SDK_TOKEN 环境变量提供 Token。");
-    process.stdout.write("粘贴 Muse SDK Token（输入不显示），然后按回车：");
-    const muted = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
-    const input = createInterface({ input: process.stdin, output: muted, terminal: true });
-    input.on("SIGINT", () => shutdown.abort());
-    try {
-      sdkToken = await input.question("", { signal: shutdown.signal });
-    } finally {
-      input.close();
-      muted.end();
-      process.stdout.write("\n");
-    }
-  }
-  sdkToken = validateSDKToken(sdkToken);
+  const { pairMacOS } = await import("muse-client/pairing");
+  const sdkToken = await readSdkToken();
   console.log("请允许蓝牙访问，在 Muse 手机 App 的 Settings > Devices 中开启 Developer mode，再选择 Add Device。");
   console.log("选择接下来显示的 MuseGadget 设备并确认；Wi-Fi 选择 Use current connection。");
-  await pairMacOS({
-    directory: credentialsDir,
-    sdkToken,
-    signal: shutdown.signal,
-    onProgress: console.log,
-  });
+  await pairMacOS({ sdkToken, signal: shutdown.signal, onProgress: console.log });
 }
 
 async function bindWechat() {
-  shutdown.signal.throwIfAborted();
   loggingIntoWechat = true;
   try { await login(); }
   finally { loggingIntoWechat = false; }
+  if (!isLoggedIn()) throw new Error("微信绑定未完成，请重新运行 bun start。");
 }
 
 async function run() {
@@ -109,13 +92,16 @@ async function run() {
   let subscription: Awaited<ReturnType<MuseClient["subscribe"]>> | undefined;
   const replies = new SessionReplies();
   const widgets = new OptionWidgets();
-  const recordWidget = createWidgetRecorder(process.env.MUSE_DEBUG_WIDGETS === "1");
   let active = false;
   let wechatId: string | undefined;   // 仅支持一个微信会话
   let bot!: ReturnType<typeof start>;
 
-  const connectAndSubscribe = async () => {
-    const c = await connect();
+  const connect = async () => {
+    const c = await MuseClient.connect({
+      credentials: await loadCredentials(),
+      onCredentials: (credentials) => saveCredentials(credentials),
+      onWarning: console.warn,
+    });
     try {
       const events = await c.subscribe({ sessionId, signal: shutdown.signal });
       if (shutdown.signal.aborted) {
@@ -159,7 +145,7 @@ async function run() {
         return {}; // 回复由长驻订阅独立转发，不等待请求关联或整轮完成。
       } catch (error) {
         if (shutdown.signal.aborted) return {};
-        console.error("Muse 消息发送失败：", error instanceof Error ? error.message : "未知错误");
+        console.error("Muse 消息发送失败：", errorMessage(error));
         return { text: "未能确认 Muse 是否收到消息，请在 Muse 查看本次请求。为避免重复执行，没有自动重发。" };
       }
     },
@@ -169,14 +155,13 @@ async function run() {
     },
   };
 
-  await connectAndSubscribe();
+  await connect();
   if (shutdown.signal.aborted) return;
   const watching = (async () => {
     while (!shutdown.signal.aborted) {
       try {
         for await (const event of subscription!) {
           if (shutdown.signal.aborted) return;
-          recordWidget(event);
           widgets.observe(event);
           const text = replies.take(event);
           if (!text || !active) continue;
@@ -189,13 +174,12 @@ async function run() {
             }
             if (!shutdown.signal.aborted) widgets.activate(reply);
           } catch (error) {
-            console.error("微信回复发送失败，请在 Muse 查看原回复：",
-              error instanceof Error ? error.message : "未知错误");
+            console.error("微信回复发送失败，请在 Muse 查看原回复：", errorMessage(error));
           }
         }
       } catch (error) {
         if (shutdown.signal.aborted) return;
-        console.error("Muse 订阅中断：", error instanceof Error ? error.message : "未知错误");
+        console.error("Muse 订阅中断：", errorMessage(error));
       }
       if (shutdown.signal.aborted) return;
       disconnect();
@@ -205,11 +189,11 @@ async function run() {
         try {
           await delay(Math.min(1000 * 2 ** Math.min(attempt, 5), 30_000), undefined,
             { signal: shutdown.signal });
-          await connectAndSubscribe();
+          await connect();
           break;
         } catch (error) {
           if (shutdown.signal.aborted) return;
-          console.error("Muse 重连失败：", error instanceof Error ? error.message : "未知错误");
+          console.error("Muse 重连失败：", errorMessage(error));
         }
       }
     }
@@ -227,23 +211,24 @@ async function run() {
   }
 }
 
-const command = process.argv[2] ?? "start";
 try {
-  if (command === "muse") await pair();
-  else if (command === "wechat") await bindWechat();
-  else if (command === "start") await startWithBindings({
-    loadMuseCredentials: () => loadCredentials(credentialsDir),
-    pairMuse: pair,
-    isWechatBound: isLoggedIn,
-    bindWechat,
-    run,
-    signal: shutdown.signal,
-    log: console.log,
-  });
+  if (await isMuseBound()) console.log("Muse：已绑定。");
   else {
-    console.log("用法：bun start（自动绑定并启动）；bun run muse / bun run wechat（单独绑定）");
-    if (!["help", "--help", "-h"].includes(command)) process.exitCode = 1;
+    console.log("Muse：未绑定，开始配对。");
+    await pairMuse();
+    shutdown.signal.throwIfAborted();
+    await loadCredentials();
+    console.log("Muse：绑定成功。");
   }
+  shutdown.signal.throwIfAborted();
+  if (isLoggedIn()) console.log("微信：已绑定。");
+  else {
+    console.log("微信：未绑定，请扫描接下来显示的二维码。");
+    await bindWechat();
+    console.log("微信：绑定成功。");
+  }
+  shutdown.signal.throwIfAborted();
+  await run();
 } catch (error) {
   if (!shutdown.signal.aborted) {
     console.error(error instanceof Error ? error.message : "启动失败");
