@@ -3,7 +3,7 @@
  *
  *   bun start   按需完成 Muse 配对与微信扫码绑定，然后启动；Ctrl+C 退出
  *
- * 复用同一 Muse 会话保留上下文（不支持 /clear）；收到第一条微信消息后，
+ * 复用同一 Muse 会话保留上下文；收到第一条微信消息后，
  * 转发所选会话全部新的助手回复；选项按钮转为编号列表，回复数字发送对应选项；
  * 图片随文字发给 Muse（单次约 190KB）；Muse 断线自动重连，不自动重发。
  */
@@ -283,7 +283,7 @@ async function run() {
         return { text: "此桥接仅支持一个微信会话。" };
       wechatId = request.conversationId;
       if (!media && text === "/help") return { text:
-        "直接发送文字或图片即可和 Muse 对话，图片约 190KB 以内，可附带说明。选项列表可回复数字选择，会发送对应选项文字。收到消息后，同步所选 Muse 会话中的全部新回复（包括其他客户端触发的回复）。不支持 /clear；重启会保留 Muse 的会话上下文。" };
+        "直接发送文字或图片即可和 Muse 对话，图片约 190KB 以内，可附带说明。选项列表可回复数字选择，会发送对应选项文字。收到消息后，同步所选 Muse 会话中的全部新回复（包括其他客户端触发的回复）。重启会保留 Muse 的会话上下文。" };
       if (shutdown.signal.aborted) return {};
       const c = client;
       if (!c) return { text: "Muse 正在重新连接，消息尚未发送，请稍后再试。" };
