@@ -30,10 +30,21 @@ for (const name of ["SIGINT", "SIGTERM"] as const)
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : "未知错误";
 
-// 长回复按 2000 个 Unicode 码点分段，不切散 emoji。
+// 长回复按 2000 个字素簇分段，不切散 emoji。
 function* chunks(text: string, size = 2000) {
-  const chars = [...text];
+  const chars = [...new Intl.Segmenter().segment(text)].map((part) => part.segment);
   for (let i = 0; i < chars.length; i += size) yield chars.slice(i, i + size).join("");
+}
+
+// ①–㊿；更多时退回普通编号。回复普通数字同样有效。
+const CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕㉖㉗㉘㉙㉚㉛㉜㉝㉞㉟㊱㊲㊳㊴㊵㊶㊷㊸㊹㊺㊻㊼㊽㊾㊿";
+function optionMark(n: number) {
+  return CIRCLED[n - 1] ?? `${n}.`;
+}
+function optionNumber(input: string) {
+  const circled = CIRCLED.indexOf(input);
+  if (circled >= 0) return circled + 1;
+  return /^\d+$/.test(input) ? Number(input) : undefined;
 }
 
 async function isMuseBound() {
@@ -153,7 +164,7 @@ class OptionWidgets {
       if (!choices) return "【此交互内容请在 Muse App 中查看】";
       const list = choices.map((choice) => {
         options.push(choice);
-        return `${options.length}. ${choice.replace(/\s*\n\s*/g, " ")}`;
+        return `${optionMark(options.length)} ${choice.replace(/\s*\n\s*/g, " ")}`;
       }).join("\n");
       rendered.set(id, list);
       return list;
@@ -175,8 +186,9 @@ class OptionWidgets {
 
   resolve(text: string): { text: string } | { error: string } {
     const input = text.trim();
-    if (this.selection.length && /^\d+$/.test(input)) {
-      const choice = this.selection[Number(input) - 1];
+    const number = this.selection.length ? optionNumber(input) : undefined;
+    if (number !== undefined) {
+      const choice = this.selection[number - 1];
       if (choice === undefined) return { error: `请回复 1–${this.selection.length} 选择，或直接输入文字。` };
       this.clearSelection();
       return { text: choice };
