@@ -223,14 +223,13 @@ function webUrl(value: unknown): string | undefined {
   } catch { return; }
 }
 
-// 链接/文件是独立的 presentation 事件；不能依赖正文完成事件或正文的 message_id。
+// 卡片是独立的 presentation 事件；未知类型提示去 Muse 查看，不静默丢弃。
 class PresentationReplies {
   private sent = new Set<string>();
 
   take(event: ChatEvent): string | undefined {
     if (event.event !== "delta.presentation" || event.payload.role === "user") return;
     const p = event.payload;
-    if (p.kind !== "external_link" && p.kind !== "file") return;
     const id = textValue(p.id) || textValue(p.message_id);
     if (!id || this.sent.has(id)) return;
 
@@ -238,11 +237,14 @@ class PresentationReplies {
     const file = record(data?.file);
     const url = p.kind === "external_link"
       ? webUrl(data?.url) || webUrl(p.fallback_text) || webUrl(data?.fallback_text)
-      : webUrl(record(file?.variants)?.original) || webUrl(file?.path);
+      : p.kind === "file"
+        ? webUrl(record(file?.variants)?.original) || webUrl(file?.path)
+        : undefined;
     const label = textValue(p.display_text) || textValue(file?.label);
+    const contentType = p.kind === "file" ? "文件" : p.kind === "external_link" ? "链接" : "内容";
     const reply = url
       ? (label && label !== url ? `${label}\n${url}` : url)
-      : `${label ? `${label}\n` : ""}【此${p.kind === "file" ? "文件" : "链接"}请在 Muse App 中查看】`;
+      : `${label ? `${label}\n` : ""}【此${contentType}请在 Muse App 中查看】`;
 
     this.sent.add(id);
     if (this.sent.size > 2000) this.sent.delete(this.sent.values().next().value!);
