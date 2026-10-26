@@ -214,6 +214,11 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     ? value as Record<string, unknown> : undefined;
 const textValue = (value: unknown) => typeof value === "string" ? value.trim() : "";
 
+function museAppNotice(content: Record<string, unknown> | undefined, contentType = "内容") {
+  const kind = textValue(content?.kind) || textValue(content?.type);
+  return `【${kind ? `${kind} - ` : ""}此${contentType}请在 Muse App 中查看】`;
+}
+
 function webUrl(value: unknown): string | undefined {
   const candidate = textValue(value);
   if (!/^https?:\/\//i.test(candidate) || /\s/.test(candidate)) return;
@@ -244,7 +249,7 @@ class PresentationReplies {
     const contentType = p.kind === "file" ? "文件" : p.kind === "external_link" ? "链接" : "内容";
     const reply = url
       ? (label && label !== url ? `${label}\n${url}` : url)
-      : `${label ? `${label}\n` : ""}【此${contentType}请在 Muse App 中查看】`;
+      : `${label ? `${label}\n` : ""}${museAppNotice(p, contentType)}`;
 
     this.sent.add(id);
     if (this.sent.size > 2000) this.sent.delete(this.sent.values().next().value!);
@@ -254,18 +259,22 @@ class PresentationReplies {
 
 // 按实际事件中的 kind=option / data.options 解析；不推测原生按钮提交协议。
 class OptionWidgets {
-  private widgets = new Map<string, string[]>();
+  private widgets = new Map<string, { kind: string; options?: string[] }>();
   private selection: string[] = [];
 
   observe(event: ChatEvent) {
     if (!Array.isArray(event.payload.widgets)) return;
     for (const value of event.payload.widgets) {
       const widget = record(value);
-      if (widget?.kind !== "option" || typeof widget.widget_id !== "string") continue;
+      if (!widget || typeof widget.widget_id !== "string") continue;
       const options = record(widget.data)?.options;
-      if (!Array.isArray(options) || !options.length || options.length > 100
-        || !options.every((option): option is string => typeof option === "string" && !!option.trim())) continue;
-      this.widgets.set(widget.widget_id, [...options]);
+      const validOptions = widget.kind === "option" && Array.isArray(options)
+        && options.length > 0 && options.length <= 100
+        && options.every((option): option is string => typeof option === "string" && !!option.trim());
+      this.widgets.set(widget.widget_id, {
+        kind: textValue(widget.kind) || textValue(widget.type),
+        options: validOptions ? [...options] : undefined,
+      });
       if (this.widgets.size > 256) this.widgets.delete(this.widgets.keys().next().value!);
     }
   }
@@ -275,8 +284,9 @@ class OptionWidgets {
     const rendered = new Map<string, string>();
     const result = text.replace(/\[\[hatch_widget:([^\]\s]+)\]\]/g, (_, id: string) => {
       if (rendered.has(id)) return rendered.get(id)!;
-      const choices = this.widgets.get(id);
-      if (!choices) return "【此交互内容请在 Muse App 中查看】";
+      const widget = this.widgets.get(id);
+      const choices = widget?.options;
+      if (!choices) return museAppNotice(widget, "交互内容");
       const list = choices.map((choice) => {
         options.push(choice);
         return `${optionMark(options.length)} ${choice.replace(/\s*\n\s*/g, " ")}`;
