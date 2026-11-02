@@ -27,7 +27,7 @@ let loggingIntoWechat = false;
 for (const name of ["SIGINT", "SIGTERM"] as const)
   process.once(name, () => {
     shutdown.abort();
-    // 微信 SDK 的扫码登录不支持 AbortSignal，退出进程以终止其轮询。
+    // 扫码登录期间立即退出进程，以终止其轮询。
     if (loggingIntoWechat) process.exit(name === "SIGINT" ? 130 : 143);
   });
 
@@ -475,7 +475,7 @@ async function run() {
   watching.catch(() => {}); // 立即处理拒绝；退出时仍会等待订阅结束。
   shutdown.signal.addEventListener("abort", disconnect, { once: true });
   try {
-    bot = start(agent, { abortSignal: shutdown.signal });
+    bot = start(agent, { abortSignal: shutdown.signal, outputFormat: "markdown" });
     console.log("已启动。请在微信 Clawbot 发送文字；Ctrl+C 退出。");
     await bot.wait();
   } finally {

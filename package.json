@@ -4,20 +4,17 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "^1.4.4"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
-    "muse-client": "0.3.0",
-    "weixin-agent-sdk": "0.5.0"
+    "muse-client": "0.4.0",
+    "weixin-agent-sdk": "0.6.0"
   },
   "scripts": {
     "start": "bun index.ts",
-    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --strict --skipLibCheck index.ts"
-  },
-  "patchedDependencies": {
-    "weixin-agent-sdk@0.5.0": "patches/weixin-agent-sdk@0.5.0.patch"
+    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --types bun --strict --skipLibCheck index.ts"
   }
 }
