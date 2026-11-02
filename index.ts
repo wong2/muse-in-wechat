@@ -51,8 +51,9 @@ function optionNumber(input: string) {
   return /^\d+$/.test(input) ? Number(input) : undefined;
 }
 
-// muse-client 把 JSON 请求限制在约 255KB；base64 后图片需小于 190KB。超出时用 sips 压成 JPEG。
-const IMAGE_LIMIT = 190 * 1024;
+// muse-client 0.4 支持单张图片最大 2 MiB，整个 JSON 请求最大 4 MiB。
+// 超限或格式不受支持时用 sips 转成 JPEG。
+const IMAGE_LIMIT = 2 * 1024 * 1024;
 function imageFile(data: Uint8Array): Pick<ImageAttachment, "mimeType" | "filename"> | undefined {
   const ascii = (start: number, length: number) =>
     data.length >= start + length ? String.fromCharCode(...data.subarray(start, start + length)) : "";
@@ -60,17 +61,10 @@ function imageFile(data: Uint8Array): Pick<ImageAttachment, "mimeType" | "filena
   if (ascii(0, 8) === "\x89PNG\r\n\x1a\n") return { mimeType: "image/png", filename: "wechat.png" };
   if (ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a") return { mimeType: "image/gif", filename: "wechat.gif" };
   if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") return { mimeType: "image/webp", filename: "wechat.webp" };
-  if (ascii(0, 2) === "BM") return { mimeType: "image/bmp", filename: "wechat.bmp" };
-  if ((ascii(0, 2) === "II" && data[2] === 0x2a) || (ascii(0, 2) === "MM" && data[2] === 0 && data[3] === 0x2a))
-    return { mimeType: "image/tiff", filename: "wechat.tiff" };
-  const brand = ascii(4, 4) === "ftyp" ? ascii(8, 4).toLowerCase() : "";
-  if (["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"].includes(brand))
-    return { mimeType: "image/heic", filename: "wechat.heic" };
-  if (brand === "avif" || brand === "avis") return { mimeType: "image/avif", filename: "wechat.avif" };
 }
 
 async function compressForMuse(filePath: string): Promise<Buffer | { error: string }> {
-  const failed = { error: "无法压缩这张图片，请换一张较小的 JPEG 或 PNG。" };
+  const failed = { error: "无法转换或压缩这张图片，请换一张不超过 2 MiB 的 JPEG 或 PNG。" };
   let width = 0;
   let height = 0;
   try {
@@ -79,7 +73,7 @@ async function compressForMuse(filePath: string): Promise<Buffer | { error: stri
     height = Number(stdout.match(/pixelHeight: (\d+)/)?.[1]);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      return { error: "这张图片超过 190KB，当前系统没有 sips，无法自动压缩。" };
+      return { error: "图片格式不受 Muse 支持或大小超过 2 MiB，当前系统没有 sips，无法自动转换或压缩。" };
     return failed;
   }
   if (!width || !height) return failed;
@@ -117,7 +111,7 @@ async function loadWechatImage(filePath: string): Promise<ImageAttachment | { er
   if (file && data.byteLength <= IMAGE_LIMIT) return { data, ...file };
   const compressed = await compressForMuse(filePath);
   if (Buffer.isBuffer(compressed)) {
-    console.log(`图片 ${data.byteLength} 字节，压缩为 ${compressed.byteLength} 字节后发送。`);
+    console.log(`图片 ${data.byteLength} 字节，转换或压缩为 JPEG ${compressed.byteLength} 字节后发送。`);
     return { data: compressed, mimeType: "image/jpeg", filename: "wechat.jpg" };
   }
   return compressed;
@@ -408,7 +402,7 @@ async function run() {
         if (shutdown.signal.aborted) return {};
         console.error("Muse 消息发送失败：", errorMessage(error));
         if (error instanceof MuseError && error.message.includes("too large"))
-          return { text: "图片压缩后仍然超过 Muse 的大小限制，这次没有发出去。" };
+          return { text: "消息总大小超过 Muse 的限制，这次没有发出去。请缩短文字或换一张较小的图片。" };
         return { text: "未能确认 Muse 是否收到消息，请在 Muse 查看本次请求。为避免重复执行，没有自动重发。" };
       }
     },
